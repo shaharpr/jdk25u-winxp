@@ -88,9 +88,9 @@ AC_DEFUN([FLAGS_SETUP_LDFLAGS_HELPER],
     fi
 
   elif test "x$TOOLCHAIN_TYPE" = xmicrosoft; then
-    BASIC_LDFLAGS="-opt:ref"
+    BASIC_LDFLAGS="-opt:ref -subsystemversion:5.02"
     BASIC_LDFLAGS_JDK_ONLY="-incremental:no"
-    BASIC_LDFLAGS_JVM_ONLY="-opt:icf,8 -subsystem:windows"
+    BASIC_LDFLAGS_JVM_ONLY="-opt:icf,8"
   fi
 
   if (test "x$TOOLCHAIN_TYPE" = xgcc || test "x$TOOLCHAIN_TYPE" = xclang) \
