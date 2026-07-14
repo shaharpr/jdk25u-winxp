@@ -27,6 +27,11 @@
 
 #include "memory/allStatic.hpp"
 #include "utilities/macros.hpp"
+
+// Allows OpenJDK to use IPHLP functions/structures.
+// On Windows XP the IphlpDll::initialize() function will just fail.
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
 #include <WinSock2.h>
 #include <ws2ipdef.h>
 #include <iphlpapi.h>

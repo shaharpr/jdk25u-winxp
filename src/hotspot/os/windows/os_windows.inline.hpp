@@ -27,6 +27,7 @@
 
 #include "os_windows.hpp"
 
+#include "runtime/atomic.hpp"
 #include "runtime/javaThread.hpp"
 #include "runtime/mutex.hpp"
 #include "runtime/os.hpp"
@@ -79,11 +80,18 @@ inline bool PlatformMutex::try_lock() {
 }
 
 inline void PlatformMonitor::notify() {
-  WakeConditionVariable(&_cond);
+  assert(_semaphore != nullptr, "invariant");
+  Atomic::inc(&_signals);
+  ReleaseSemaphore(_semaphore, 1, nullptr);
 }
 
 inline void PlatformMonitor::notify_all() {
-  WakeAllConditionVariable(&_cond);
+  assert(_semaphore != nullptr, "invariant");
+  int waiters = Atomic::add(&_waiters, 0);
+  if (waiters > 0) {
+    Atomic::add(&_signals, waiters);
+    ReleaseSemaphore(_semaphore, waiters, nullptr);
+  }
 }
 
 // Trim-native support, stubbed out for now, may be enabled later

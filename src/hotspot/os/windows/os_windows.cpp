@@ -5723,32 +5723,45 @@ PlatformMutex::~PlatformMutex() {
   DeleteCriticalSection(&_mutex);
 }
 
-PlatformMonitor::PlatformMonitor() {
-  InitializeConditionVariable(&_cond);
+PlatformMonitor::PlatformMonitor() : _semaphore(nullptr), _waiters(0), _signals(0) {
+  _semaphore = CreateSemaphore(nullptr, 0, MAXLONG, nullptr);
+  assert(_semaphore != nullptr, "CreateSemaphore failed");
 }
 
 PlatformMonitor::~PlatformMonitor() {
-  // There is no DeleteConditionVariable API
+  if (_semaphore != nullptr) {
+    CloseHandle(_semaphore);
+  }
 }
 
 // Must already be locked
 int PlatformMonitor::wait(uint64_t millis) {
   int ret = OS_TIMEOUT;
-  // The timeout parameter for SleepConditionVariableCS is a DWORD
-  if (millis > UINT_MAX) {
-    millis = UINT_MAX;
-  }
-  int status = SleepConditionVariableCS(&_cond, &_mutex,
-                                        millis == 0 ? INFINITE : (DWORD)millis);
-  if (status != 0) {
+  Atomic::inc(&_waiters);
+
+  if (Atomic::add(&_signals, 0) > 0) {
+    Atomic::add(&_signals, -1);
+    Atomic::add(&_waiters, -1);
     ret = OS_OK;
+  } else {
+    LeaveCriticalSection(&_mutex);
+    DWORD timeout = millis == 0 ? INFINITE : (DWORD)min<uint64_t>(millis, UINT_MAX);
+    DWORD status = WaitForSingleObject(_semaphore, timeout);
+    EnterCriticalSection(&_mutex);
+
+    Atomic::add(&_waiters, -1);
+    if (status == WAIT_OBJECT_0) {
+      if (Atomic::add(&_signals, 0) > 0) {
+        Atomic::add(&_signals, -1);
+      }
+      ret = OS_OK;
+    } else if (status == WAIT_TIMEOUT) {
+      ret = OS_TIMEOUT;
+    } else {
+      assert(false, "WaitForSingleObject failed with status: %lu", status);
+    }
   }
-  #ifndef PRODUCT
-  else {
-    DWORD err = GetLastError();
-    assert(err == ERROR_TIMEOUT, "SleepConditionVariableCS: %ld:", err);
-  }
-  #endif
+
   return ret;
 }
 

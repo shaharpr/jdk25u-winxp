@@ -50,7 +50,9 @@ class PlatformMutex : public CHeapObj<mtSynchronizer> {
 
 class PlatformMonitor : public PlatformMutex {
  private:
-  CONDITION_VARIABLE _cond;  // Native condition variable for blocking
+  HANDLE _semaphore;        // Semaphore used to emulate condition-variable wakeups
+  volatile int _waiters;    // Number of threads currently waiting
+  volatile int _signals;    // Pending wakeups that were not yet consumed
   NONCOPYABLE(PlatformMonitor);
 
  public:
