@@ -31,6 +31,7 @@
 #include "java_lang_ProcessHandleImpl_Info.h"
 
 #include <windows.h>
+#include <Psapi.h>
 #include <tlhelp32.h>
 #include <sddl.h>
 
@@ -410,7 +411,7 @@ Java_java_lang_ProcessHandleImpl_00024Info_info0(JNIEnv *env,
                                                  jlong jpid) {
     DWORD pid = (DWORD)jpid;
     HANDLE handle =
-        OpenProcess(THREAD_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess(THREAD_QUERY_INFORMATION | PROCESS_QUERY_INFORMATION,
                     FALSE, pid);
     if (handle == NULL) {
         return;
@@ -465,14 +466,14 @@ static void getCmdlineInfo(JNIEnv *env, HANDLE handle, jobject jinfo) {
     DWORD bufsize = sizeof(exeName)/sizeof(WCHAR);
     jstring commandObj = NULL;
 
-    if (QueryFullProcessImageNameW(handle, 0,  exeName, &bufsize)) {
+    if (GetProcessImageFileNameW(handle, exeName, &bufsize)) {
         commandObj = (*env)->NewString(env, (const jchar *)exeName,
                                        (jsize)wcslen(exeName));
     } else if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
         bufsize = 32768;
         longPath = (WCHAR*)malloc(bufsize * sizeof(WCHAR));
         if (longPath != NULL) {
-            if (QueryFullProcessImageNameW(handle, 0, longPath, &bufsize)) {
+            if (GetProcessImageFileNameW(handle, 0, longPath, &bufsize)) {
                 commandObj = (*env)->NewString(env, (const jchar *)longPath,
                                                (jsize)wcslen(longPath));
             }
