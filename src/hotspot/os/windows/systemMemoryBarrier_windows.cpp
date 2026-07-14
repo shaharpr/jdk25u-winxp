@@ -28,9 +28,9 @@
 #include <processthreadsapi.h>
 
 bool WindowsSystemMemoryBarrier::initialize() {
-  return true;
+  return false; // Not supported in XP...
 }
 
 void WindowsSystemMemoryBarrier::emit() {
-  FlushProcessWriteBuffers();
+  //FlushProcessWriteBuffers();
 }

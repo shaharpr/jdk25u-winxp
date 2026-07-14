@@ -226,21 +226,7 @@ static BOOL virtualFree(LPVOID lpAddress, SIZE_T dwSize, DWORD  dwFreeType) {
   return result;
 }
 
-// Logging wrapper for VirtualAllocExNuma
-static LPVOID virtualAllocExNuma(HANDLE hProcess, LPVOID lpAddress, SIZE_T dwSize, DWORD  flAllocationType,
-                                 DWORD  flProtect, DWORD  nndPreferred) {
-  LPVOID result = ::VirtualAllocExNuma(hProcess, lpAddress, dwSize, flAllocationType, flProtect, nndPreferred);
-  if (result != nullptr) {
-    log_trace(os)("VirtualAllocExNuma(" PTR_FORMAT ", %zu, %x, %x, %x) returned " PTR_FORMAT "%s.",
-                  p2i(lpAddress), dwSize, flAllocationType, flProtect, nndPreferred, p2i(result),
-                  ((lpAddress != nullptr && result != lpAddress) ? " <different base!>" : ""));
-  } else {
-    PreserveLastError ple;
-    log_info(os)("VirtualAllocExNuma(" PTR_FORMAT ", %zu, %x, %x, %x) failed (%u).",
-                 p2i(lpAddress), dwSize, flAllocationType, flProtect, nndPreferred, ple.v);
-  }
-  return result;
-}
+// Logging wrapper for VirtualAllocExNuma was here...
 
 // Logging wrapper for MapViewOfFileEx
 static LPVOID mapViewOfFileEx(HANDLE hFileMappingObject, DWORD  dwDesiredAccess, DWORD  dwFileOffsetHigh,
@@ -975,28 +961,9 @@ int os::active_processor_count() {
   bool use_process_affinity_mask = false;
   bool got_process_group_affinity = false;
 
-  if (GetProcessGroupAffinity(GetCurrentProcess(), &group_count, nullptr) == 0) {
-    DWORD last_error = GetLastError();
-    if (last_error == ERROR_INSUFFICIENT_BUFFER) {
-      if (group_count > 0) {
-        got_process_group_affinity = true;
-
-        if (group_count == 1) {
-          use_process_affinity_mask = true;
-        }
-      } else {
-        warning("Unexpected group count of 0 from GetProcessGroupAffinity.");
-        assert(false, "Group count must not be 0.");
-      }
-    } else {
-      char buf[512];
-      size_t buf_len = os::lasterror(buf, sizeof(buf));
-      warning("Attempt to get process group affinity failed: %s", buf_len != 0 ? buf : "<unknown error>");
-    }
-  } else {
-    warning("Unexpected GetProcessGroupAffinity success result.");
-    assert(false, "Unexpected GetProcessGroupAffinity success result");
-  }
+  // GetProcessGroupAffinity is not available on Windows XP.
+  // On XP, fall back to using SYSTEM_INFO and process affinity mask.
+  got_process_group_affinity = false;
 
   // Fall back to SYSTEM_INFO.dwNumberOfProcessors if the process group affinity could not be determined.
   if (!got_process_group_affinity) {
@@ -1055,6 +1022,9 @@ typedef HRESULT (WINAPI *SetThreadDescriptionFnPtr)(HANDLE, PCWSTR);
 typedef HRESULT (WINAPI *GetThreadDescriptionFnPtr)(HANDLE, PWSTR*);
 static SetThreadDescriptionFnPtr _SetThreadDescription = nullptr;
 DEBUG_ONLY(static GetThreadDescriptionFnPtr _GetThreadDescription = nullptr;)
+
+typedef DWORD (WINAPI *GetFinalPathNameByHandleWFnPtr)(HANDLE, LPWSTR, DWORD, DWORD);
+static GetFinalPathNameByHandleWFnPtr _GetFinalPathNameByHandleW = nullptr;
 
 // forward decl.
 static errno_t convert_to_unicode(char const* char_path, LPWSTR* unicode_path);
@@ -1920,7 +1890,7 @@ void os::print_os_info_brief(outputStream* st) {
 }
 
 void os::win32::print_uptime_info(outputStream* st) {
-  unsigned long long ticks = GetTickCount64();
+  unsigned long ticks = GetTickCount();
   os::print_dhm(st, "OS uptime:", ticks/1000);
 }
 
@@ -3094,10 +3064,7 @@ static char* allocate_pages_individually(size_t bytes, char* addr, DWORD flags,
                                       flags,
                                       prot);
       } else {
-        // get the next node to use from the used_node_list
-        assert(numa_node_list_holder.get_count() > 0, "Multiple NUMA nodes expected");
-        DWORD node = numa_node_list_holder.get_node_list_entry(count % numa_node_list_holder.get_count());
-        p_new = (char *)virtualAllocExNuma(hProc, next_alloc_addr, bytes_to_rq, flags, prot, node);
+        log_debug(os)("Note: VirtualAllocExNuma() was here, but it is not available on this platform.");
       }
     }
 
@@ -4129,16 +4096,6 @@ void os::win32::initialize_system_info() {
   _processor_level = si.wProcessorLevel;
 
   DWORD processors = 0;
-  bool schedules_all_processor_groups = win32::is_windows_11_or_greater() || win32::is_windows_server_2022_or_greater();
-  if (schedules_all_processor_groups) {
-    processors = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
-    if (processors == 0) {
-      char buf[512];
-      size_t buf_len = os::lasterror(buf, sizeof(buf));
-      warning("Attempt to determine the processor count from GetActiveProcessorCount() failed: %s", buf_len != 0 ? buf : "<unknown error>");
-      assert(false, "Must find at least 1 logical processor");
-    }
-  }
 
   set_processor_count(processors > 0 ? processors : si.dwNumberOfProcessors);
 
@@ -4214,8 +4171,8 @@ HINSTANCE os::win32::load_Windows_dll(const char* name, char *ebuf,
 #define MAXIMUM_THREADS_TO_KEEP (16 * MAXIMUM_WAIT_OBJECTS)
 #define EXIT_TIMEOUT 300000 /* 5 minutes */
 
-static BOOL CALLBACK init_crit_sect_call(PINIT_ONCE, PVOID pcrit_sect, PVOID*) {
-  InitializeCriticalSection((CRITICAL_SECTION*)pcrit_sect);
+static BOOL init_crit_sect_call(CRITICAL_SECTION* pcrit_sect) {
+  InitializeCriticalSection(pcrit_sect);
   return TRUE;
 }
 
@@ -4233,8 +4190,8 @@ static void exit_process_or_thread(Ept what, int exit_code) {
     static HANDLE handles[MAXIMUM_THREADS_TO_KEEP];
     static int handle_count = 0;
 
-    static INIT_ONCE init_once_crit_sect = INIT_ONCE_STATIC_INIT;
     static CRITICAL_SECTION crit_sect;
+    static volatile LONG crit_sect_initialized = 0;
     static volatile DWORD process_exiting = 0;
     int i, j;
     DWORD res;
@@ -4248,9 +4205,20 @@ static void exit_process_or_thread(Ept what, int exit_code) {
     bool registered = false;
 
     // The first thread that reached this point, initializes the critical section.
-    if (!InitOnceExecuteOnce(&init_once_crit_sect, init_crit_sect_call, &crit_sect, nullptr)) {
-      warning("crit_sect initialization failed in %s: %d\n", __FILE__, __LINE__);
-    } else if (Atomic::load_acquire(&process_exiting) == 0) {
+    if (Atomic::add(&crit_sect_initialized, 0) == 0) {
+      if (Atomic::cmpxchg(&crit_sect_initialized, (LONG)0, (LONG)1) == 0) {
+        if (!init_crit_sect_call(&crit_sect)) {
+          warning("crit_sect initialization failed in %s: %d\n", __FILE__, __LINE__);
+        }
+        Atomic::release_store(&crit_sect_initialized, (LONG)2);
+      } else {
+        // Wait for another thread to finish initialization
+        while (Atomic::add(&crit_sect_initialized, 0) != 2) {
+          Sleep(1);
+        }
+      }
+    }
+    if (Atomic::add(&crit_sect_initialized, 0) == 2 && Atomic::load_acquire(&process_exiting) == 0) {
       if (what != EPT_THREAD) {
         // Atomically set process_exiting before the critical section
         // to increase the visibility between racing threads.
@@ -4558,6 +4526,15 @@ jint os::init_2(void) {
   }
   log_info(os, thread)("The SetThreadDescription API is%s available.", _SetThreadDescription == nullptr ? " not" : "");
 
+  // Lookup GetFinalPathNameByHandleW - available on Vista+ for symlink dereferencing
+  HINSTANCE _kernel32 = LoadLibrary(TEXT("kernel32.dll"));
+  if (_kernel32 != nullptr) {
+    _GetFinalPathNameByHandleW =
+      reinterpret_cast<GetFinalPathNameByHandleWFnPtr>(
+                                                      GetProcAddress(_kernel32,
+                                                                     "GetFinalPathNameByHandleW"));
+  }
+  log_debug(os)("GetFinalPathNameByHandleW API is%s available.", _GetFinalPathNameByHandleW == nullptr ? " not" : "");
 
   return JNI_OK;
 }
@@ -4665,6 +4642,14 @@ static bool is_symbolic_link(const wchar_t* wide_path) {
 
 // This method dereferences a symbolic link
 static WCHAR* get_path_to_target(const wchar_t* wide_path) {
+  // GetFinalPathNameByHandleW is only available on Vista+
+  // On XP, symbolic links are not supported, so return nullptr
+  if (_GetFinalPathNameByHandleW == nullptr) {
+    errno = ERROR_NOT_SUPPORTED;
+    log_debug(os)("get_path_to_target() GetFinalPathNameByHandleW not available on this OS.");
+    return nullptr;
+  }
+
   HANDLE hFile = CreateFileW(wide_path, GENERIC_READ, FILE_SHARE_READ, nullptr,
                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (hFile == INVALID_HANDLE_VALUE) {
@@ -4674,28 +4659,32 @@ static WCHAR* get_path_to_target(const wchar_t* wide_path) {
   }
 
   // Returned value includes the terminating null character.
-  const size_t target_path_size = ::GetFinalPathNameByHandleW(hFile, nullptr, 0,
-                                                              FILE_NAME_NORMALIZED);
+  const size_t target_path_size = _GetFinalPathNameByHandleW(hFile, nullptr, 0,
+                                                             FILE_NAME_NORMALIZED);
   if (target_path_size == 0) {
     errno = ::GetLastError();
     log_debug(os)("get_path_to_target() failed to GetFinalPathNameByHandleW: GetLastError->%ld.", errno);
+    ::CloseHandle(hFile);
     return nullptr;
   }
 
   WCHAR* path_to_target = NEW_C_HEAP_ARRAY(WCHAR, target_path_size, mtInternal);
 
   // The returned size is the length excluding the terminating null character.
-  const size_t res = ::GetFinalPathNameByHandleW(hFile, path_to_target, static_cast<DWORD>(target_path_size),
-                                                 FILE_NAME_NORMALIZED);
+  const size_t res = _GetFinalPathNameByHandleW(hFile, path_to_target, static_cast<DWORD>(target_path_size),
+                                                FILE_NAME_NORMALIZED);
   if (res != target_path_size - 1) {
     errno = ::GetLastError();
     log_debug(os)("get_path_to_target() failed to GetFinalPathNameByHandleW: GetLastError->%ld.", errno);
+    FREE_C_HEAP_ARRAY(WCHAR, path_to_target);
+    ::CloseHandle(hFile);
     return nullptr;
   }
 
   if (::CloseHandle(hFile) == 0) {
     errno = ::GetLastError();
     log_debug(os)("get_path_to_target() failed to CloseHandle: GetLastError->%ld.", errno);
+    FREE_C_HEAP_ARRAY(WCHAR, path_to_target);
     return nullptr;
   }
 
@@ -5745,7 +5734,7 @@ int PlatformMonitor::wait(uint64_t millis) {
     ret = OS_OK;
   } else {
     LeaveCriticalSection(&_mutex);
-    DWORD timeout = millis == 0 ? INFINITE : (DWORD)min<uint64_t>(millis, UINT_MAX);
+    DWORD timeout = millis == 0 ? INFINITE : (DWORD)(millis > UINT_MAX ? UINT_MAX : millis);
     DWORD status = WaitForSingleObject(_semaphore, timeout);
     EnterCriticalSection(&_mutex);
 
