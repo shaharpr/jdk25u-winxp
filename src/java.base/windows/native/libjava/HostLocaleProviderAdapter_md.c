@@ -24,7 +24,7 @@
  */
 
 #undef _WIN32_WINNT // I think that it will just fail in Windows XP.
-#define _WIN32_WINNT 0x0600
+#define _WIN32_WINNT 0x0A00
 
 #include "sun_util_locale_provider_HostLocaleProviderAdapterImpl.h"
 #include "jni_util.h"

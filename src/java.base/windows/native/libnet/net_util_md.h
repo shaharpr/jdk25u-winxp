@@ -22,6 +22,10 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+#undef _WIN32_WINNT // TODO
+#define _WIN32_WINNT 0x0A00
+
 #include <winsock2.h>
 #include <WS2tcpip.h>
 #include <iphlpapi.h>

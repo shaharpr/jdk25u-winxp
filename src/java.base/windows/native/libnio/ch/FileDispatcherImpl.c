@@ -365,13 +365,14 @@ Java_sun_nio_ch_FileDispatcherImpl_truncate0(JNIEnv *env, jobject this,
 {
     BOOL result = 0;
     HANDLE h = (HANDLE)(handleval(env, fdo));
-    FILE_END_OF_FILE_INFO eofInfo;
+    /*FILE_END_OF_FILE_INFO eofInfo;
 
     eofInfo.EndOfFile.QuadPart = size;
     result = SetFileInformationByHandle(h,
                                         FileEndOfFileInfo,
                                         &eofInfo,
-                                        sizeof(eofInfo));
+                                        sizeof(eofInfo));*/
+    result = _chsize(h, size);
     if (result == 0) {
         JNU_ThrowIOExceptionWithLastError(env, "Truncation failed");
         return IOS_THROWN;
